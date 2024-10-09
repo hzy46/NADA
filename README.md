@@ -1,5 +1,244 @@
 This repository contains supporting materials for paper `NADA: Designing Network Algorithms via Large Language Models`.
 
+### Table of contents
+
+- [Prompts](#prompts)
+    - The prompt for state design
+    - The prompt for network architecture design 
+- [Top Performing States](#top-performing-states)
+    - The best state from GPT-3.5 for the FCC dataset
+    - The best state from GPT-4 for the FCC dataset
+    - The best state from GPT-3.5 for the Starlink dataset
+    - The best state from GPT-4 for the Starlink dataset
+    - The best state from GPT-3.5 for the 4G dataset
+    - The best state from GPT-4 for the 4G dataset
+    - The best state from GPT-3.5 for the 5G dataset
+    - The best state from GPT-4 for the 5G dataset
+- [Top Perfoming Network Architectures](#top-performing-network-architectures)
+    - The best network architecture from GPT-3.5 for the FCC dataset
+    - The best network architecture from GPT-3.5 for the Starlink dataset
+    - The best network architecture from GPT-3.5 for the 4G dataset
+    - The best network architecture from GPT-3.5 for the 5G dataset
+
+
+
+### Prompts
+
+The prompt we used to design states:
+
+~~~
+You are trying to design the state code of a reinforcement learning algorithm for adaptive bit rate.
+
+Adaptive Bit Rate (ABR) is a streaming technology used in multimedia applications, particularly in video streaming, to optimize the delivery of content over networks with varying bandwidth conditions. The main goal of ABR is to provide a smooth and uninterrupted viewing experience for users by dynamically adjusting the quality of the video based on the available network conditions.
+
+The input variables include:
+
+bit_rate_kbps_list:
+Historical bit rates in kbps, candidate values can be [300., 750., 1200., 1850., 2850., 4300.]
+bit_rate_kbps_list[-1] is the most recent bit rate.
+For example, [300, 750, ..., 1200, 1850, 4300, 4300] means the last two chunks we downloaded is 4300kbps.
+
+buffer_size_second_list:
+Historical buffer size (buffered video length) in second
+buffer_size_second_list[-1] is the most recent buffer size.
+
+delay_second_list:
+Historical delay (download time of the chunk) in second
+delay_second_list[-1] is the download time of the most recent downloaded chunk.
+
+video_chunk_size_bytes_list:
+Historical downloaded video chunk sizes in bytes
+video_chunk_size_bytes_list[-1] is the size of the most recent downloaded chunk.
+Thus video_chunk_size_bytes_list[-1] / delay_second_list[-1] is the download throughtput of the most recent chunks
+
+next_chunk_bytes_sizes:
+The sizes of the next one chunk in different bit rate levels.
+For example, this can be [181801, 450283, 668286, 1034108, 1728879, 2354772],
+which means the next chunk will be 181801 bytes if we select 300kbps (all_bit_rate_kbps[0]); is 450283 bytes if we select 750kbps(all_bit_rate_kbps[1])
+We always have len(next_chunk_bytes_sizes) = len(all_bit_rate_kbps)
+
+video_chunk_remain_num:
+How many remaining video chunks there are. It is a single number.
+
+total_chunk_num:
+A single number. total_chunk_num is 48 in most cases.
+
+all_bit_rate_kbps:
+all_bit_rate_kbps=[300., 750., 1200., 1850., 2850., 4300.] in most cases
+
+
+```python
+import numpy as np
+
+def state_func(
+    # historical bit rates in kbps, candidate values can be [300., 750., 1200., 1850., 2850., 4300.]
+    # bit_rate_kbps_list[-1] is the most recent bit rate.
+    # For example, [300, 750, ..., 1200, 1850, 4300, 4300] means the last two chunks we downloaded is 4300kbps.
+    bit_rate_kbps_list,
+    # historical buffer size (buffered video length) in second
+    # buffer_size_second_list[-1] is the most recent buffer size.
+    buffer_size_second_list,
+    # historical delay (download time of the chunk) in second
+    # delay_second_list[-1] is the download time of the most recent downloaded chunk.
+    delay_second_list,
+    # historical downloaded video chunk sizes in bytes
+    # video_chunk_size_bytes_list[-1] is the size of the most recent downloaded chunk.
+    # Thus video_chunk_size_bytes_list[-1] / delay_second_list[-1] is the download throughtput of the most recent chunks
+    video_chunk_size_bytes_list,
+    # The sizes of the next one chunk in different bit rate levels.
+    # For example, this can be [181801, 450283, 668286, 1034108, 1728879, 2354772],
+    # which means the next chunk will be 181801 bytes if we select 300kbps (all_bit_rate_kbps[0]); is 450283 bytes if we select 750kbps(all_bit_rate_kbps[1])
+    # We always have len(next_chunk_bytes_sizes) = len(all_bit_rate_kbps)
+    next_chunk_bytes_sizes,
+    # How many remaining video chunks there are. It is a single number
+    video_chunk_remain_num,
+    # A single number. total_chunk_num is 48 in most cases.
+    total_chunk_num,
+    # all_bit_rate_kbps=[300., 750., 1200., 1850., 2850., 4300.] in most cases
+    all_bit_rate_kbps,
+):
+    # normal state 1: The normed last bit rate
+    normed_last_bit_rate = bit_rate_kbps_list[-1] / float(np.max(all_bit_rate_kbps))
+    # normal state 2: The normed last buffer size second (buffered video second)
+    buffer_norm_factor = 10.
+    normed_last_buffer_size = buffer_size_second_list[-1] / buffer_norm_factor # in 10-second
+    # normal state 3: The percentage of the remaining video chunks.
+    remaining_chunk_percentage = float(video_chunk_remain_num / total_chunk_num)
+    # Finally, the normal states. Each entry in normal_states should be a list.
+    normal_states = [
+        [normed_last_bit_rate],
+        [normed_last_buffer_size],
+        [remaining_chunk_percentage],
+    ]
+
+    # time series states
+    # use 8 as the time series length for time series state 1 and 2
+    history_window = 8
+    # time series state 1: Estimated throughput in near history
+    # use the unit mega byte per second (it is equiv to kilo byte / ms)
+    throughput_MBps_list = []
+    for i in range(history_window):
+        history_chunk_size_bytes = video_chunk_size_bytes_list[-(history_window - i)]
+        history_delay_second = delay_second_list[-(history_window - i)]
+        throughput_MBps_list.append(history_chunk_size_bytes / 1000. / 1000. / history_delay_second)
+    # time series state 2: The normed download time (delay) in near history
+    delay_norm_factor = 10.
+    normed_delay_list = [x / delay_norm_factor for x in delay_second_list]
+    # time series state 3: Treat next chunk sizes in MB as ts states, too. We use Mega Byte since Byte is too large for NN.
+    next_chunk_bytes_MB = [x / 1000. / 1000. for x in next_chunk_bytes_sizes]
+    # Finally, the time series states. Each entry in timeseries_states should be a list.
+    time_series_states = [
+        throughput_MBps_list,
+        normed_delay_list,
+        next_chunk_bytes_MB,
+    ]
+
+    # Return the states
+    return {
+        "normal_states": normal_states,
+        "time_series_states": time_series_states,
+    }
+```
+
+Try to improve the state design for me. Remember:
+
+1. Please keep the function name `state_func`
+2. Please keep the function's input variables. Do not add any new inputs or remove any inputs. But you can decide how to use the existing inputs in the parameter list.
+3. Please keep the function's output variables. The outputs should always be {"normal_states": normal_states, "time_series_states": time_series_states}, while normal_states and time_series_states are list of list. Specifically every element in normal_states would be a list of values that will be sent to a fully connected network; and every element in time_series_states will be treated as time series and sent to a 1D conv network.
+4. Please keep `import numpy`. You can also import scipy, pandas if needed.
+5. Please normalize the input properly when you try to add new states. It is always better to have the output states within the range [-1, 1]. Do not directly put kbps, bytes, or kbps / second in the output.
+
+Using the following format to output:
+
+Analysis and ideas:
+<try to analyze the current code, the problem, propose ideas, and choose the best ideas>
+
+Code:
+```python
+<Your improved state design code here>
+```
+~~~
+
+
+The prompt we used to design network architecture:
+~~~
+You are trying to design a network function of a reinforcement learning algorithm for adaptive bit rate.
+
+Adaptive Bit Rate (ABR) is a streaming technology used in multimedia applications, particularly in video streaming, to optimize the delivery of content over networks with varying bandwidth conditions. The main goal of ABR is to provide a smooth and uninterrupted viewing experience for users by dynamically adjusting the quality of the video based on the available network conditions.
+
+We have 3 inputs: normal_input_list, ts_input_list, and action_dim.
+
+Their meanings are:
+  - normal_input_list[0]: normed last bit rate. It is a tf.placeholder and has the shape of `[None, 1]`.
+  - normal_input_list[1]: normed last buffer size. It is a tf.placeholder and has the shape of `[None, 1]`.
+  - normal_input_list[2]: normed remaining chunk percentage. 0% means we have finished playing. 50% means there are 50% of remaining chunks. It is a tf.placeholder and has the shape of `[None, 1]`.
+  - ts_input_list[0]: normed throughput MBps. It is the normed throughput numbers in history. It is a tf.placeholder and has the shape of `[None, history_window_n]`.
+  - ts_input_list[1]: normed download time list. It is download time of each chunks. It is a tf.placeholder and has the shape of `[None, history_window_n]`.
+  - ts_input_list[2]: next chunk sizes in MB. It is the chunk sizes of the next chunk in different bitrates. It is a tf.placeholder and has the shape of `[None, bit_rate_n]`.
+
+
+A network function example is:
+```python
+import tensorflow.compat.v1 as tf
+import tflearn
+
+def network_func(normal_input_list, ts_input_list, action_dim):
+    with tf.variable_scope('actor'):
+        normal_features = [
+            tflearn.fully_connected(normal_input, 128, activation='relu')
+            for normal_input in normal_input_list
+        ]
+        ts_features = [
+            tflearn.flatten(tflearn.conv_1d(
+                tf.expand_dims(ts_input, axis=1), 
+                128, 1, activation='relu'
+            ))
+            for ts_input in ts_input_list
+        ]
+        merged_features = tflearn.merge(normal_features + ts_features, "concat")
+        pi_features = tflearn.fully_connected(merged_features, 128, activation='relu')
+        pi = tflearn.fully_connected(pi_features, action_dim, activation='softmax')
+
+    with tf.variable_scope('critic'):
+        normal_features = [
+            tflearn.fully_connected(normal_input, 128, activation='relu')
+            for normal_input in normal_input_list
+        ]
+        ts_features = [
+            tflearn.flatten(tflearn.conv_1d(
+                tf.expand_dims(ts_input, axis=1), 
+                128, 1, activation='relu'
+            ))
+            for ts_input in ts_input_list
+        ]
+        merged_features = tflearn.merge(normal_features + ts_features, "concat")
+        value_features = tflearn.fully_connected(merged_features, 128, activation='relu')
+        value = tflearn.fully_connected(value_features, 1, activation='linear')
+
+    return pi, value
+```
+
+The example uses fully connected network to process all states in normal_input_list, and uses time series network to process the states in ts_input_list.
+
+Please notice that:
+- You MUST include "import tensorflow.compat.v1 as tf" and "import tflearn" in the beginning of your code. Use tflearn or tensorflow v1 to program the network.
+- You MUST use the same function name: `network_func` in your output.
+- You MUST use the two outputs `pi, value` in your returning. We strictly follow the actor-critic structure but you can design the intermediate network structure.
+- The two outputs: `pi` should be exactly the same dimention with `action_dim`, which can be viewed as a classification. `value` should be exactly a single value which is used to evaluate the states.
+- DO NOT change the input: normal_input_list, ts_input_list, action_dim.
+- You can change the hidden_num, the intermediate network structure, or use other tensorflow v1 functions to program the network.
+
+Using the following format to output:
+
+Analysis and ideas:
+<try to analyze the current code, the problem, propose ideas, and choose the best ideas>
+
+Code:
+```python
+<Your improved network design code here>
+```
+~~~
+
 ### Top Performing States
 
 The best state from GPT-3.5 for the FCC dataset:
@@ -628,219 +867,3 @@ def network_func(normal_input_list, ts_input_list, action_dim):
     return pi, value
 ```
 
-### Prompts
-
-The prompt we used to design states:
-
-~~~
-You are trying to design the state code of a reinforcement learning algorithm for adaptive bit rate.
-
-Adaptive Bit Rate (ABR) is a streaming technology used in multimedia applications, particularly in video streaming, to optimize the delivery of content over networks with varying bandwidth conditions. The main goal of ABR is to provide a smooth and uninterrupted viewing experience for users by dynamically adjusting the quality of the video based on the available network conditions.
-
-The input variables include:
-
-bit_rate_kbps_list:
-Historical bit rates in kbps, candidate values can be [300., 750., 1200., 1850., 2850., 4300.]
-bit_rate_kbps_list[-1] is the most recent bit rate.
-For example, [300, 750, ..., 1200, 1850, 4300, 4300] means the last two chunks we downloaded is 4300kbps.
-
-buffer_size_second_list:
-Historical buffer size (buffered video length) in second
-buffer_size_second_list[-1] is the most recent buffer size.
-
-delay_second_list:
-Historical delay (download time of the chunk) in second
-delay_second_list[-1] is the download time of the most recent downloaded chunk.
-
-video_chunk_size_bytes_list:
-Historical downloaded video chunk sizes in bytes
-video_chunk_size_bytes_list[-1] is the size of the most recent downloaded chunk.
-Thus video_chunk_size_bytes_list[-1] / delay_second_list[-1] is the download throughtput of the most recent chunks
-
-next_chunk_bytes_sizes:
-The sizes of the next one chunk in different bit rate levels.
-For example, this can be [181801, 450283, 668286, 1034108, 1728879, 2354772],
-which means the next chunk will be 181801 bytes if we select 300kbps (all_bit_rate_kbps[0]); is 450283 bytes if we select 750kbps(all_bit_rate_kbps[1])
-We always have len(next_chunk_bytes_sizes) = len(all_bit_rate_kbps)
-
-video_chunk_remain_num:
-How many remaining video chunks there are. It is a single number.
-
-total_chunk_num:
-A single number. total_chunk_num is 48 in most cases.
-
-all_bit_rate_kbps:
-all_bit_rate_kbps=[300., 750., 1200., 1850., 2850., 4300.] in most cases
-
-
-```python
-import numpy as np
-
-def state_func(
-    # historical bit rates in kbps, candidate values can be [300., 750., 1200., 1850., 2850., 4300.]
-    # bit_rate_kbps_list[-1] is the most recent bit rate.
-    # For example, [300, 750, ..., 1200, 1850, 4300, 4300] means the last two chunks we downloaded is 4300kbps.
-    bit_rate_kbps_list,
-    # historical buffer size (buffered video length) in second
-    # buffer_size_second_list[-1] is the most recent buffer size.
-    buffer_size_second_list,
-    # historical delay (download time of the chunk) in second
-    # delay_second_list[-1] is the download time of the most recent downloaded chunk.
-    delay_second_list,
-    # historical downloaded video chunk sizes in bytes
-    # video_chunk_size_bytes_list[-1] is the size of the most recent downloaded chunk.
-    # Thus video_chunk_size_bytes_list[-1] / delay_second_list[-1] is the download throughtput of the most recent chunks
-    video_chunk_size_bytes_list,
-    # The sizes of the next one chunk in different bit rate levels.
-    # For example, this can be [181801, 450283, 668286, 1034108, 1728879, 2354772],
-    # which means the next chunk will be 181801 bytes if we select 300kbps (all_bit_rate_kbps[0]); is 450283 bytes if we select 750kbps(all_bit_rate_kbps[1])
-    # We always have len(next_chunk_bytes_sizes) = len(all_bit_rate_kbps)
-    next_chunk_bytes_sizes,
-    # How many remaining video chunks there are. It is a single number
-    video_chunk_remain_num,
-    # A single number. total_chunk_num is 48 in most cases.
-    total_chunk_num,
-    # all_bit_rate_kbps=[300., 750., 1200., 1850., 2850., 4300.] in most cases
-    all_bit_rate_kbps,
-):
-    # normal state 1: The normed last bit rate
-    normed_last_bit_rate = bit_rate_kbps_list[-1] / float(np.max(all_bit_rate_kbps))
-    # normal state 2: The normed last buffer size second (buffered video second)
-    buffer_norm_factor = 10.
-    normed_last_buffer_size = buffer_size_second_list[-1] / buffer_norm_factor # in 10-second
-    # normal state 3: The percentage of the remaining video chunks.
-    remaining_chunk_percentage = float(video_chunk_remain_num / total_chunk_num)
-    # Finally, the normal states. Each entry in normal_states should be a list.
-    normal_states = [
-        [normed_last_bit_rate],
-        [normed_last_buffer_size],
-        [remaining_chunk_percentage],
-    ]
-
-    # time series states
-    # use 8 as the time series length for time series state 1 and 2
-    history_window = 8
-    # time series state 1: Estimated throughput in near history
-    # use the unit mega byte per second (it is equiv to kilo byte / ms)
-    throughput_MBps_list = []
-    for i in range(history_window):
-        history_chunk_size_bytes = video_chunk_size_bytes_list[-(history_window - i)]
-        history_delay_second = delay_second_list[-(history_window - i)]
-        throughput_MBps_list.append(history_chunk_size_bytes / 1000. / 1000. / history_delay_second)
-    # time series state 2: The normed download time (delay) in near history
-    delay_norm_factor = 10.
-    normed_delay_list = [x / delay_norm_factor for x in delay_second_list]
-    # time series state 3: Treat next chunk sizes in MB as ts states, too. We use Mega Byte since Byte is too large for NN.
-    next_chunk_bytes_MB = [x / 1000. / 1000. for x in next_chunk_bytes_sizes]
-    # Finally, the time series states. Each entry in timeseries_states should be a list.
-    time_series_states = [
-        throughput_MBps_list,
-        normed_delay_list,
-        next_chunk_bytes_MB,
-    ]
-
-    # Return the states
-    return {
-        "normal_states": normal_states,
-        "time_series_states": time_series_states,
-    }
-```
-
-Try to improve the state design for me. Remember:
-
-1. Please keep the function name `state_func`
-2. Please keep the function's input variables. Do not add any new inputs or remove any inputs. But you can decide how to use the existing inputs in the parameter list.
-3. Please keep the function's output variables. The outputs should always be {"normal_states": normal_states, "time_series_states": time_series_states}, while normal_states and time_series_states are list of list. Specifically every element in normal_states would be a list of values that will be sent to a fully connected network; and every element in time_series_states will be treated as time series and sent to a 1D conv network.
-4. Please keep `import numpy`. You can also import scipy, pandas if needed.
-5. Please normalize the input properly when you try to add new states. It is always better to have the output states within the range [-1, 1]. Do not directly put kbps, bytes, or kbps / second in the output.
-
-Using the following format to output:
-
-Analysis and ideas:
-<try to analyze the current code, the problem, propose ideas, and choose the best ideas>
-
-Code:
-```python
-<Your improved state design code here>
-```
-~~~
-
-
-The prompt we used to design network architecture:
-~~~
-You are trying to design a network function of a reinforcement learning algorithm for adaptive bit rate.
-
-Adaptive Bit Rate (ABR) is a streaming technology used in multimedia applications, particularly in video streaming, to optimize the delivery of content over networks with varying bandwidth conditions. The main goal of ABR is to provide a smooth and uninterrupted viewing experience for users by dynamically adjusting the quality of the video based on the available network conditions.
-
-We have 3 inputs: normal_input_list, ts_input_list, and action_dim.
-
-Their meanings are:
-  - normal_input_list[0]: normed last bit rate. It is a tf.placeholder and has the shape of `[None, 1]`.
-  - normal_input_list[1]: normed last buffer size. It is a tf.placeholder and has the shape of `[None, 1]`.
-  - normal_input_list[2]: normed remaining chunk percentage. 0% means we have finished playing. 50% means there are 50% of remaining chunks. It is a tf.placeholder and has the shape of `[None, 1]`.
-  - ts_input_list[0]: normed throughput MBps. It is the normed throughput numbers in history. It is a tf.placeholder and has the shape of `[None, history_window_n]`.
-  - ts_input_list[1]: normed download time list. It is download time of each chunks. It is a tf.placeholder and has the shape of `[None, history_window_n]`.
-  - ts_input_list[2]: next chunk sizes in MB. It is the chunk sizes of the next chunk in different bitrates. It is a tf.placeholder and has the shape of `[None, bit_rate_n]`.
-
-
-A network function example is:
-```python
-import tensorflow.compat.v1 as tf
-import tflearn
-
-def network_func(normal_input_list, ts_input_list, action_dim):
-    with tf.variable_scope('actor'):
-        normal_features = [
-            tflearn.fully_connected(normal_input, 128, activation='relu')
-            for normal_input in normal_input_list
-        ]
-        ts_features = [
-            tflearn.flatten(tflearn.conv_1d(
-                tf.expand_dims(ts_input, axis=1), 
-                128, 1, activation='relu'
-            ))
-            for ts_input in ts_input_list
-        ]
-        merged_features = tflearn.merge(normal_features + ts_features, "concat")
-        pi_features = tflearn.fully_connected(merged_features, 128, activation='relu')
-        pi = tflearn.fully_connected(pi_features, action_dim, activation='softmax')
-
-    with tf.variable_scope('critic'):
-        normal_features = [
-            tflearn.fully_connected(normal_input, 128, activation='relu')
-            for normal_input in normal_input_list
-        ]
-        ts_features = [
-            tflearn.flatten(tflearn.conv_1d(
-                tf.expand_dims(ts_input, axis=1), 
-                128, 1, activation='relu'
-            ))
-            for ts_input in ts_input_list
-        ]
-        merged_features = tflearn.merge(normal_features + ts_features, "concat")
-        value_features = tflearn.fully_connected(merged_features, 128, activation='relu')
-        value = tflearn.fully_connected(value_features, 1, activation='linear')
-
-    return pi, value
-```
-
-The example uses fully connected network to process all states in normal_input_list, and uses time series network to process the states in ts_input_list.
-
-Please notice that:
-- You MUST include "import tensorflow.compat.v1 as tf" and "import tflearn" in the beginning of your code. Use tflearn or tensorflow v1 to program the network.
-- You MUST use the same function name: `network_func` in your output.
-- You MUST use the two outputs `pi, value` in your returning. We strictly follow the actor-critic structure but you can design the intermediate network structure.
-- The two outputs: `pi` should be exactly the same dimention with `action_dim`, which can be viewed as a classification. `value` should be exactly a single value which is used to evaluate the states.
-- DO NOT change the input: normal_input_list, ts_input_list, action_dim.
-- You can change the hidden_num, the intermediate network structure, or use other tensorflow v1 functions to program the network.
-
-Using the following format to output:
-
-Analysis and ideas:
-<try to analyze the current code, the problem, propose ideas, and choose the best ideas>
-
-Code:
-```python
-<Your improved network design code here>
-```
-~~~
