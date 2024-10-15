@@ -1,4 +1,4 @@
-This repository contains supporting materials for paper `NADA: Designing Network Algorithms via Large Language Models`.
+This repository contains supporting materials for paper `Designing Network Algorithms via Large Language Models`.
 
 ### Table of contents
 
